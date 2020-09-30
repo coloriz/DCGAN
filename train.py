@@ -164,7 +164,8 @@ if opt.dry_run:
     opt.niter = 1
 
 # Set up a log directory
-file_writer = tf.summary.create_file_writer(str(opt.log_dir/datetime.now().strftime('%Y%m%d-%H%M%S')))
+log_dir = str(opt.log_dir/datetime.now().strftime('%Y%m%d-%H%M%S'))
+file_writer = tf.summary.create_file_writer(log_dir)
 
 # Set up a sample output directory
 opt.outf.mkdir(parents=True, exist_ok=True)
@@ -230,9 +231,18 @@ def distributed_train_step(dist_inputs):
            strategy.reduce(tf.distribute.ReduceOp.MEAN, D_G_z2, axis=None)
 
 
+# Trace graphs
+if not ckpt_manager.latest_checkpoint:
+    tf.summary.trace_on(graph=True, profiler=True)
+    data = next(iter(dataset_dist))
+    distributed_train_step(data)
+    with file_writer.as_default():
+        tf.summary.trace_export('DCGAN_trace', step=0, profiler_outdir=log_dir)
+
 for epoch in range(int(ckpt.epoch.numpy()), opt.niter + 1):
     for i, data in enumerate(dataset_dist):
         errD, errG, D_x, D_G_z1, D_G_z2 = distributed_train_step(data)
+        
         # Output training stats
         if i % 50 == 0:
             print(f'[{epoch}/{opt.niter}][{i}/{len(dataset)}]\t'
@@ -240,8 +250,7 @@ for epoch in range(int(ckpt.epoch.numpy()), opt.niter + 1):
                   f'Loss_G: {errG:.4f}\t'
                   f'D(x): {D_x:.4f}\t'
                   f'D(G(z)): {D_G_z1:.4f} / {D_G_z2:.4f}')
-        if opt.dry_run:
-            break
+        
         # Log training stats
         ckpt.step.assign_add(1)
         step = int(ckpt.step.numpy())
@@ -251,8 +260,10 @@ for epoch in range(int(ckpt.epoch.numpy()), opt.niter + 1):
             tf.summary.scalar('D_x', D_x, step=step)
             tf.summary.scalar('D_G_z1', D_G_z1, step=step)
             tf.summary.scalar('D_G_z2', D_G_z2, step=step)
-    if opt.dry_run:
-        break
+
+        if opt.dry_run:
+            break
+
     # Check how the generator is doing by saving G's output on fixed_noise
     fake = netG(fixed_noise, training=False)
     # Scale it back to [0, 1]
